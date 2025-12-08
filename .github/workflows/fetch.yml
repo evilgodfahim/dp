@@ -1,0 +1,26 @@
+name: Fetch DhakaPost Opinion
+
+on:
+  schedule:
+    - cron: "0 * * * *"   # every hour
+  workflow_dispatch:
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Fetch HTML
+        run: |
+          curl -L "https://www.dhakapost.com/opinion" -o opinion.html
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git add opinion.html
+          git commit -m "Update snapshot" || exit 0
+          git push
