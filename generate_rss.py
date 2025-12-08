@@ -4,6 +4,7 @@ import re
 from datetime import datetime
 import html
 import sys
+import os
 
 class RSSFeedGenerator:
     def __init__(self, html_file='opinion.html', output_file='feed.xml'):
@@ -22,7 +23,6 @@ class RSSFeedGenerator:
         except FileNotFoundError:
             print(f"✗ ERROR: File '{self.html_file}' not found!")
             print(f"   Current directory files:")
-            import os
             for f in os.listdir('.'):
                 print(f"   - {f}")
             return None
@@ -34,24 +34,12 @@ class RSSFeedGenerator:
         """Extract article data from the HTML content"""
         try:
             print("Extracting articles from HTML...")
-            
-            # Multiple patterns to try
-            patterns = [
-                r'"initialContents":\s*\[(.*?)\]\s*,\s*"id"',
-                r'"initialContents":\[(.*?)\],"id"',
-                r'initialContents":\[(.*?)\]',
-            ]
-            
-            match = None
-            for pattern in patterns:
-                match = re.search(pattern, html_content, re.DOTALL)
-                if match:
-                    print(f"✓ Pattern matched!")
-                    break
+
+            # Robust regex to capture the full initialContents array
+            match = re.search(r'"initialContents":\s*(\[\{.*?\}\])', html_content, re.DOTALL)
             
             if not match:
                 print("✗ ERROR: Could not find article data in HTML")
-                print("   Searching for 'initialContents' in file...")
                 if 'initialContents' in html_content:
                     idx = html_content.find('initialContents')
                     print(f"   Found 'initialContents' at position {idx}")
@@ -60,11 +48,10 @@ class RSSFeedGenerator:
                     print("   'initialContents' not found in file!")
                 return []
             
-            json_str = '[' + match.group(1) + ']'
+            json_str = match.group(1)
             
             # Clean up escaped characters
-            json_str = json_str.replace('\\u0026', '&')
-            json_str = json_str.replace('\\"', '"')
+            json_str = json_str.replace('\\u0026', '&').replace('\\"', '"')
             
             print(f"Parsing JSON ({len(json_str)} characters)...")
             articles = json.loads(json_str)
@@ -144,7 +131,6 @@ class RSSFeedGenerator:
             '    <language>bn</language>',
             f'    <lastBuildDate>{datetime.now().strftime("%a, %d %b %Y %H:%M:%S +0600")}</lastBuildDate>',
             '    <generator>Dhaka Post RSS Generator</generator>',
-            '    <atom:link href="https://raw.githubusercontent.com/YOUR_USERNAME/YOUR_REPO/main/feed.xml" rel="self" type="application/rss+xml"/>',
             ''
         ]
         
@@ -219,7 +205,6 @@ class RSSFeedGenerator:
             with open(self.output_file, 'w', encoding='utf-8') as f:
                 f.write(rss_content)
             
-            import os
             if os.path.exists(self.output_file):
                 file_size = os.path.getsize(self.output_file)
                 print(f"✓ SUCCESS: {self.output_file} created ({file_size:,} bytes)")
