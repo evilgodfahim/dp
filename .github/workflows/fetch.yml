@@ -1,56 +1,120 @@
-name: Fetch DhakaPost (Rendered)
+name: Fetch DhakaPost (Rendered, robust)
 
 on:
   schedule:
-    - cron: "0 * * * *"
+    - cron: "0 * * * *"   # every hour
   workflow_dispatch:
 
 jobs:
   fetch:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Node
+      - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: 20
 
-      - name: Install Puppeteer
+      - name: Install puppeteer
         run: |
           npm init -y
-          npm install puppeteer
+          npm install puppeteer@21
 
-      - name: Render HTML
+      - name: Render and save HTML
         run: |
-          node <<'EOF'
-          const puppeteer = require("puppeteer");
+          node <<'NODE'
+          const puppeteer = require('puppeteer');
+          const fs = require('fs');
+
+          async function autoScroll(page){
+            await page.evaluate(async () => {
+              await new Promise((resolve) => {
+                var total = 0;
+                var distance = 500;
+                var timer = setInterval(() => {
+                  window.scrollBy(0, distance);
+                  total += distance;
+                  if(total > document.body.scrollHeight - window.innerHeight){
+                    clearInterval(timer);
+                    resolve();
+                  }
+                }, 300);
+              });
+            });
+          }
 
           (async () => {
-              const browser = await puppeteer.launch({
+            const url = "https://www.dhakapost.com/opinion";
+            const maxAttempts = 3;
+            let lastHtml = '';
+            for(let attempt=1; attempt<=maxAttempts; attempt++){
+              let browser;
+              try{
+                browser = await puppeteer.launch({
                   headless: "new",
-                  args: ["--no-sandbox"]
-              });
-              const page = await browser.newPage();
-              await page.goto("https://www.dhakapost.com/opinion", {
-                  waitUntil: "networkidle2",
-                  timeout: 60000
-              });
+                  args: ["--no-sandbox","--disable-setuid-sandbox","--disable-dev-shm-usage"]
+                });
+                const page = await browser.newPage();
+                // generous timeouts
+                page.setDefaultNavigationTimeout(90000);
+                page.setDefaultTimeout(90000);
+                await page.setViewport({width:1280, height:900});
 
-              const html = await page.content();
-              const fs = require("fs");
-              fs.writeFileSync("opinion.html", html);
+                // go to page
+                await page.goto(url, { waitUntil: "networkidle2", timeout: 90000 });
 
-              await browser.close();
+                // scroll to trigger lazy loads
+                await autoScroll(page);
+
+                // Wait for either an article element or for body text to grow meaningfully
+                try{
+                  await Promise.race([
+                    page.waitForSelector('article, .post, .td_block_inner, .single-post', { timeout: 90000 }),
+                    page.waitForFunction(() => document.body && document.body.innerText.length > 1200, { timeout: 90000 })
+                  ]);
+                } catch(e){
+                  // fine — we'll still capture whatever is rendered
+                }
+
+                // extra short pause so any XHR can finish
+                await page.waitForTimeout(2000);
+
+                const html = await page.content();
+                await browser.close();
+
+                // If html length increased vs previous attempt, accept and break
+                if(html && html.length > 2000){
+                  fs.writeFileSync('opinion.html', html);
+                  lastHtml = html;
+                  break;
+                } else {
+                  // save anyway for debugging, try again
+                  fs.writeFileSync(`opinion_try_${attempt}.html`, html);
+                  lastHtml = html;
+                }
+              } catch(err){
+                if(browser) try{ await browser.close(); }catch(e){}
+                // continue to next attempt
+              }
+            } // attempts
+
+            // ensure at least one file exists
+            if(!fs.existsSync('opinion.html') && lastHtml){
+              fs.writeFileSync('opinion.html', lastHtml);
+            }
+            console.log('Saved opinion.html');
           })();
-          EOF
+          NODE
 
       - name: Commit and push
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
-          git add opinion.html
-          git commit -m "Rendered update" || exit 0
-          git push
+          git add opinion.html || true
+          git add opinion_try_*.html || true
+          git commit -m "Rendered snapshot" || echo "no changes to commit"
+          git push || echo "push failed"
