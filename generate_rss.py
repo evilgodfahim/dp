@@ -1,9 +1,7 @@
 import json
 import re
 from datetime import datetime
-from xml.etree.ElementTree import Element, SubElement, tostring
-from xml.dom import minidom
-import os
+import html
 
 class RSSFeedGenerator:
     def __init__(self, html_file='opinion.html', output_file='feed.xml'):
@@ -88,84 +86,79 @@ class RSSFeedGenerator:
             # Fallback to current time
             return datetime.now().strftime('%a, %d %b %Y %H:%M:%S +0600')
     
+    def escape_xml(self, text):
+        """Escape special XML characters"""
+        if not text:
+            return ''
+        return html.escape(text)
+    
     def generate_rss(self, articles):
-        """Generate RSS 2.0 XML from articles"""
-        # Create RSS root
-        rss = Element('rss', version='2.0')
-        rss.set('xmlns:atom', 'http://www.w3.org/2005/Atom')
-        rss.set('xmlns:dc', 'http://purl.org/dc/elements/1.1/')
-        rss.set('xmlns:content', 'http://purl.org/rss/1.0/modules/content/')
+        """Generate RSS 2.0 XML from articles using string building"""
         
-        # Create channel
-        channel = SubElement(rss, 'channel')
+        # Start RSS feed
+        rss_lines = [
+            '<?xml version="1.0" encoding="UTF-8"?>',
+            '<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:content="http://purl.org/rss/1.0/modules/content/">',
+            '  <channel>',
+            '    <title>Dhaka Post - Opinion</title>',
+            '    <link>https://www.dhakapost.com/opinion</link>',
+            '    <description>Latest opinion articles from Dhaka Post</description>',
+            '    <language>bn</language>',
+            f'    <lastBuildDate>{datetime.now().strftime("%a, %d %b %Y %H:%M:%S +0600")}</lastBuildDate>',
+            '    <generator>Dhaka Post RSS Generator</generator>',
+            '    <atom:link href="https://raw.githubusercontent.com/YOUR_USERNAME/YOUR_REPO/main/feed.xml" rel="self" type="application/rss+xml"/>',
+            ''
+        ]
         
-        # Channel metadata
-        SubElement(channel, 'title').text = 'Dhaka Post - Opinion'
-        SubElement(channel, 'link').text = 'https://www.dhakapost.com/opinion'
-        SubElement(channel, 'description').text = 'Latest opinion articles from Dhaka Post'
-        SubElement(channel, 'language').text = 'bn'
-        SubElement(channel, 'lastBuildDate').text = datetime.now().strftime('%a, %d %b %Y %H:%M:%S +0600')
-        SubElement(channel, 'generator').text = 'Dhaka Post RSS Generator'
-        
-        # Self link
-        atom_link = SubElement(channel, '{http://www.w3.org/2005/Atom}link')
-        atom_link.set('href', 'https://raw.githubusercontent.com/YOUR_USERNAME/YOUR_REPO/main/feed.xml')
-        atom_link.set('rel', 'self')
-        atom_link.set('type', 'application/rss+xml')
-        
-        # Add articles as items (they come pre-sorted, newest first)
+        # Add articles as items
         for article in articles:
-            item = SubElement(channel, 'item')
-            
             # Title
             title = article.get('Heading', 'No Title')
             if article.get('Subheading'):
                 title += f" | {article['Subheading']}"
-            SubElement(item, 'title').text = title
             
-            # Link
+            # Other fields
             link = article.get('URL', '')
-            SubElement(item, 'link').text = link
-            
-            # Description/Brief
             description = article.get('Brief', '')
-            SubElement(item, 'description').text = description
-            
-            # GUID
-            SubElement(item, 'guid', isPermaLink='true').text = link
-            
-            # Pub Date
             pub_date = self.parse_bangla_date(article.get('CreatedAtBangla', ''))
-            SubElement(item, 'pubDate').text = pub_date
+            image_url = article.get('ImagePathMd', '')
             
-            # Category
-            SubElement(item, 'category').text = 'Opinion'
+            # Build content HTML
+            content_html = ''
+            if image_url:
+                content_html += f'<img src="{image_url}" alt="{self.escape_xml(title)}" /><br/><br/>'
+            content_html += self.escape_xml(description)
             
-            # Author/Creator
-            SubElement(item, '{http://purl.org/dc/elements/1.1/}creator').text = 'Dhaka Post'
+            # Add item
+            rss_lines.extend([
+                '    <item>',
+                f'      <title>{self.escape_xml(title)}</title>',
+                f'      <link>{self.escape_xml(link)}</link>',
+                f'      <description>{self.escape_xml(description)}</description>',
+                f'      <guid isPermaLink="true">{self.escape_xml(link)}</guid>',
+                f'      <pubDate>{pub_date}</pubDate>',
+                '      <category>Opinion</category>',
+                '      <dc:creator>Dhaka Post</dc:creator>',
+            ])
             
-            # Enclosure for image
-            if article.get('ImagePathMd'):
-                enclosure = SubElement(item, 'enclosure')
-                enclosure.set('url', article['ImagePathMd'])
-                enclosure.set('type', 'image/jpeg')
-                enclosure.set('length', '0')
+            # Add enclosure if image exists
+            if image_url:
+                rss_lines.append(f'      <enclosure url="{self.escape_xml(image_url)}" type="image/jpeg" length="0"/>')
             
-            # Content encoded (full HTML description with image)
-            if article.get('ImagePathMd') or description:
-                content_html = ''
-                if article.get('ImagePathMd'):
-                    content_html += f'<img src="{article["ImagePathMd"]}" alt="{title}" /><br/><br/>'
-                content_html += description
-                SubElement(item, '{http://purl.org/rss/1.0/modules/content/}encoded').text = content_html
+            # Add content:encoded
+            rss_lines.extend([
+                f'      <content:encoded><![CDATA[{content_html}]]></content:encoded>',
+                '    </item>',
+                ''
+            ])
         
-        return rss
-    
-    def prettify_xml(self, elem):
-        """Return a pretty-printed XML string"""
-        rough_string = tostring(elem, encoding='utf-8')
-        reparsed = minidom.parseString(rough_string)
-        return reparsed.toprettyxml(indent="  ", encoding='utf-8').decode('utf-8')
+        # Close RSS feed
+        rss_lines.extend([
+            '  </channel>',
+            '</rss>'
+        ])
+        
+        return '\n'.join(rss_lines)
     
     def update_feed(self):
         """Main function to update the RSS feed"""
@@ -174,27 +167,42 @@ class RSSFeedGenerator:
         # Read HTML file
         html_content = self.read_html_file()
         if not html_content:
-            print("Failed to read HTML file")
+            print("ERROR: Failed to read HTML file")
             return False
+        
+        print(f"Successfully read HTML file: {self.html_file}")
         
         # Extract articles
         articles = self.extract_articles(html_content)
         if not articles:
-            print("No articles found")
+            print("ERROR: No articles found in HTML")
             return False
         
-        print(f"Found {len(articles)} articles")
+        print(f"Successfully extracted {len(articles)} articles")
         
         # Generate RSS
-        rss = self.generate_rss(articles)
+        rss_content = self.generate_rss(articles)
+        print(f"Generated RSS content ({len(rss_content)} characters)")
         
         # Save to file
-        xml_string = self.prettify_xml(rss)
-        with open(self.output_file, 'w', encoding='utf-8') as f:
-            f.write(xml_string)
-        
-        print(f"RSS feed saved to {self.output_file}")
-        return True
+        try:
+            with open(self.output_file, 'w', encoding='utf-8') as f:
+                f.write(rss_content)
+            print(f"✓ SUCCESS: RSS feed saved to {self.output_file}")
+            
+            # Verify file was created
+            import os
+            if os.path.exists(self.output_file):
+                file_size = os.path.getsize(self.output_file)
+                print(f"✓ File verified: {self.output_file} ({file_size} bytes)")
+            else:
+                print(f"✗ ERROR: File was not created!")
+                return False
+                
+            return True
+        except Exception as e:
+            print(f"✗ ERROR writing file: {e}")
+            return False
 
 if __name__ == "__main__":
     generator = RSSFeedGenerator()
