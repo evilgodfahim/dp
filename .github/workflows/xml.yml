@@ -1,14 +1,9 @@
 name: Update RSS Feed
 
 on:
-  # Run every hour at 15 minutes past the hour
   schedule:
     - cron: '15 * * * *'
-  
-  # Allow manual trigger
   workflow_dispatch:
-  
-  # Run when opinion.html is pushed
   push:
     branches:
       - main
@@ -25,55 +20,51 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
       
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
       
+      - name: List files
+        run: |
+          echo "Files in repository:"
+          ls -la
+      
       - name: Generate RSS feed
         run: |
           python generate_rss.py
+          echo "---"
+          echo "After generation:"
+          ls -la feed.xml || echo "feed.xml NOT created!"
       
-      - name: Check if feed.xml exists and has changes
-        id: check_changes
+      - name: Show feed.xml info
         run: |
-          if [ ! -f feed.xml ]; then
-            echo "ERROR: feed.xml was not created!"
+          if [ -f feed.xml ]; then
+            echo "✓ feed.xml exists"
+            wc -l feed.xml
+            head -20 feed.xml
+          else
+            echo "✗ feed.xml does NOT exist!"
             exit 1
           fi
-          
-          echo "feed.xml created successfully"
-          ls -lh feed.xml
-          
-          # Check if feed.xml is tracked in git
-          if git ls-files --error-unmatch feed.xml > /dev/null 2>&1; then
-            # File is tracked, check for changes
-            if git diff --quiet feed.xml; then
-              echo "changed=false" >> $GITHUB_OUTPUT
-              echo "No changes in feed.xml"
-            else
-              echo "changed=true" >> $GITHUB_OUTPUT
-              echo "Changes detected in feed.xml"
-            fi
-          else
-            # File is not tracked, this is a new file
-            echo "changed=true" >> $GITHUB_OUTPUT
-            echo "feed.xml is a new file, will add it"
-          fi
       
-      - name: Commit and push feed.xml
-        if: steps.check_changes.outputs.changed == 'true'
+      - name: Configure git
         run: |
-          git config --global user.name 'GitHub Actions Bot'
-          git config --global user.email 'actions@github.com'
+          git config user.name 'GitHub Actions Bot'
+          git config user.email 'actions@github.com'
+      
+      - name: Add feed.xml to git
+        run: |
           git add feed.xml
-          git commit -m "Auto-update RSS feed - $(date +'%Y-%m-%d %H:%M:%S')"
-          git push
+          git status
       
-      - name: No changes detected
-        if: steps.check_changes.outputs.changed != 'true'
+      - name: Commit if changed
         run: |
-          echo "No changes in feed.xml, skipping commit"
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Auto-update RSS feed - $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
+            git push
+            echo "✓ Changes committed and pushed"
+          fi
