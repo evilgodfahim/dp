@@ -37,12 +37,34 @@ jobs:
         run: |
           python generate_rss.py
       
-      - name: Check if feed changed
+      - name: Check if feed.xml exists and has changes
         id: check_changes
         run: |
-          git diff --quiet feed.xml || echo "changed=true" >> $GITHUB_OUTPUT
+          if [ ! -f feed.xml ]; then
+            echo "ERROR: feed.xml was not created!"
+            exit 1
+          fi
+          
+          echo "feed.xml created successfully"
+          ls -lh feed.xml
+          
+          # Check if feed.xml is tracked in git
+          if git ls-files --error-unmatch feed.xml > /dev/null 2>&1; then
+            # File is tracked, check for changes
+            if git diff --quiet feed.xml; then
+              echo "changed=false" >> $GITHUB_OUTPUT
+              echo "No changes in feed.xml"
+            else
+              echo "changed=true" >> $GITHUB_OUTPUT
+              echo "Changes detected in feed.xml"
+            fi
+          else
+            # File is not tracked, this is a new file
+            echo "changed=true" >> $GITHUB_OUTPUT
+            echo "feed.xml is a new file, will add it"
+          fi
       
-      - name: Commit and push if changed
+      - name: Commit and push feed.xml
         if: steps.check_changes.outputs.changed == 'true'
         run: |
           git config --global user.name 'GitHub Actions Bot'
