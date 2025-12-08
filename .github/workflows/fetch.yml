@@ -1,8 +1,8 @@
-name: Fetch DhakaPost Opinion
+name: Fetch DhakaPost (Rendered)
 
 on:
   schedule:
-    - cron: "0 * * * *"   # every hour
+    - cron: "0 * * * *"
   workflow_dispatch:
 
 jobs:
@@ -13,14 +13,44 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Fetch HTML
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Puppeteer
         run: |
-          curl -L "https://www.dhakapost.com/opinion" -o opinion.html
+          npm init -y
+          npm install puppeteer
+
+      - name: Render HTML
+        run: |
+          node <<'EOF'
+          const puppeteer = require("puppeteer");
+
+          (async () => {
+              const browser = await puppeteer.launch({
+                  headless: "new",
+                  args: ["--no-sandbox"]
+              });
+              const page = await browser.newPage();
+              await page.goto("https://www.dhakapost.com/opinion", {
+                  waitUntil: "networkidle2",
+                  timeout: 60000
+              });
+
+              const html = await page.content();
+              const fs = require("fs");
+              fs.writeFileSync("opinion.html", html);
+
+              await browser.close();
+          })();
+          EOF
 
       - name: Commit and push
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
           git add opinion.html
-          git commit -m "Update snapshot" || exit 0
+          git commit -m "Rendered update" || exit 0
           git push
