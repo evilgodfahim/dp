@@ -4,6 +4,7 @@ from datetime import datetime
 import html
 import sys
 import os
+import re
 
 class RSSFeedGenerator:
     def __init__(self, html_file='opinion.html', output_file='feed.xml'):
@@ -29,24 +30,89 @@ class RSSFeedGenerator:
             return None
 
     def extract_articles(self, html_content):
-        """Extract article data from the HTML content reliably"""
+        """Extract article data from the HTML content using regex to find the JSON properly"""
         try:
             print("Extracting articles from HTML...")
 
-            idx = html_content.find('initialContents')
-            if idx == -1:
-                print("✗ ERROR: 'initialContents' not found in HTML")
-                return []
+            # Find the initialContents variable
+            pattern = r'initialContents\s*=\s*(\[[\s\S]*?\]);'
+            match = re.search(pattern, html_content)
+            
+            if not match:
+                print("✗ ERROR: 'initialContents' JSON array not found")
+                # Try alternative pattern
+                idx = html_content.find('initialContents')
+                if idx != -1:
+                    print(f"  Found 'initialContents' at position {idx}, trying bracket matching...")
+                    start = html_content.find('[', idx)
+                    if start == -1:
+                        print("  ✗ No opening bracket found")
+                        return []
+                    
+                    # Count brackets to find matching closing bracket
+                    bracket_count = 0
+                    in_string = False
+                    escape_next = False
+                    end = start
+                    
+                    for i in range(start, len(html_content)):
+                        char = html_content[i]
+                        
+                        if escape_next:
+                            escape_next = False
+                            continue
+                            
+                        if char == '\\':
+                            escape_next = True
+                            continue
+                            
+                        if char == '"' and not escape_next:
+                            in_string = not in_string
+                            continue
+                            
+                        if not in_string:
+                            if char == '[' or char == '{':
+                                bracket_count += 1
+                            elif char == ']' or char == '}':
+                                bracket_count -= 1
+                                if bracket_count == 0:
+                                    end = i + 1
+                                    break
+                    
+                    if end > start:
+                        json_str = html_content[start:end]
+                    else:
+                        print("  ✗ Could not find matching closing bracket")
+                        return []
+                else:
+                    return []
+            else:
+                json_str = match.group(1)
 
-            # Find the opening and closing brackets of the JSON array
-            start = html_content.find('[', idx)
-            end = html_content.find(']', start) + 1
-            json_str = html_content[start:end]
-
-            # Clean up escaped characters
-            json_str = json_str.replace('\\u0026', '&').replace('\\"', '"')
-
-            articles = json.loads(json_str)
+            print(f"  Extracted JSON string ({len(json_str)} characters)")
+            
+            # Parse the JSON
+            try:
+                articles = json.loads(json_str)
+            except json.JSONDecodeError as e:
+                print(f"  ✗ JSON decode error: {e}")
+                print(f"  Attempting to fix common issues...")
+                
+                # Try to fix common issues
+                # Remove any trailing commas before closing brackets
+                json_str = re.sub(r',(\s*[}\]])', r'\1', json_str)
+                
+                try:
+                    articles = json.loads(json_str)
+                    print(f"  ✓ Fixed and parsed successfully")
+                except:
+                    print(f"  ✗ Still failed after attempted fixes")
+                    # Save problematic JSON for debugging
+                    with open('debug_json.txt', 'w', encoding='utf-8') as f:
+                        f.write(json_str[:2000])  # First 2000 chars
+                    print(f"  Saved first 2000 chars to debug_json.txt for inspection")
+                    return []
+            
             print(f"✓ Successfully extracted {len(articles)} articles")
 
             if len(articles) > self.max_articles:
@@ -54,6 +120,7 @@ class RSSFeedGenerator:
                 print(f"  Limited to {self.max_articles} articles")
 
             return articles
+            
         except Exception as e:
             print(f"✗ ERROR extracting articles: {e}")
             import traceback
