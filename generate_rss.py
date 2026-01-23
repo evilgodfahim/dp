@@ -30,91 +30,120 @@ class RSSFeedGenerator:
             return None
 
     def extract_articles(self, html_content):
-        """Extract article data from the HTML content using regex to find the JSON properly"""
+        """Extract article data from the HTML content"""
         try:
             print("Extracting articles from HTML...")
 
             # Find the initialContents variable
-            pattern = r'initialContents\s*=\s*(\[[\s\S]*?\]);'
-            match = re.search(pattern, html_content)
+            idx = html_content.find('initialContents')
+            if idx == -1:
+                print("✗ ERROR: 'initialContents' not found")
+                return []
             
-            if not match:
-                print("✗ ERROR: 'initialContents' JSON array not found")
-                # Try alternative pattern
-                idx = html_content.find('initialContents')
-                if idx != -1:
-                    print(f"  Found 'initialContents' at position {idx}, trying bracket matching...")
-                    start = html_content.find('[', idx)
-                    if start == -1:
-                        print("  ✗ No opening bracket found")
-                        return []
+            print(f"  Found 'initialContents' at position {idx}")
+            
+            # Look at the context around initialContents
+            context_start = max(0, idx - 50)
+            context_end = min(len(html_content), idx + 200)
+            context = html_content[context_start:context_end]
+            print(f"  Context: {repr(context)}")
+            
+            # Find where the actual JSON data starts
+            # Look for common patterns: initialContents = [...] or initialContents: [...]
+            start = html_content.find('[', idx)
+            if start == -1:
+                print("  ✗ No opening bracket found after initialContents")
+                return []
+            
+            print(f"  Opening bracket at position {start} (offset +{start-idx} from initialContents)")
+            print(f"  First 100 chars after bracket: {repr(html_content[start:start+100])}")
+            
+            # Check if this looks like valid JSON
+            test_snippet = html_content[start:start+50].strip()
+            if not test_snippet.startswith('['):
+                print(f"  ✗ Unexpected content after bracket: {repr(test_snippet)}")
+                return []
+            
+            # Try to find the end of the JSON array by looking for the pattern
+            # We need to find either ];  or ]; or ]</script>
+            
+            # Method 1: Look for common termination patterns
+            patterns = [
+                (r'\];', 'semicolon'),
+                (r'\]\s*<', 'tag'),
+                (r'\]\s*var\s+', 'next var'),
+            ]
+            
+            end = -1
+            method_used = None
+            
+            for pattern, name in patterns:
+                match = re.search(pattern, html_content[start:start+50000])
+                if match:
+                    end = start + match.end() - 1  # -1 to include the ]
+                    method_used = name
+                    print(f"  Found end using pattern '{name}' at position {end}")
+                    break
+            
+            if end == -1:
+                print("  ✗ Could not find JSON array end using patterns")
+                print("  Trying bracket counting method...")
+                
+                # Fallback: bracket counting
+                bracket_count = 0
+                in_string = False
+                escape_next = False
+                
+                for i in range(start, min(start + 50000, len(html_content))):
+                    char = html_content[i]
                     
-                    # Count brackets to find matching closing bracket
-                    bracket_count = 0
-                    in_string = False
-                    escape_next = False
-                    end = start
+                    if escape_next:
+                        escape_next = False
+                        continue
                     
-                    for i in range(start, len(html_content)):
-                        char = html_content[i]
-                        
-                        if escape_next:
-                            escape_next = False
-                            continue
-                            
-                        if char == '\\':
-                            escape_next = True
-                            continue
-                            
-                        if char == '"' and not escape_next:
-                            in_string = not in_string
-                            continue
-                            
-                        if not in_string:
-                            if char == '[' or char == '{':
-                                bracket_count += 1
-                            elif char == ']' or char == '}':
-                                bracket_count -= 1
-                                if bracket_count == 0:
-                                    end = i + 1
-                                    break
+                    if char == '\\':
+                        escape_next = True
+                        continue
                     
-                    if end > start:
-                        json_str = html_content[start:end]
-                    else:
-                        print("  ✗ Could not find matching closing bracket")
-                        return []
+                    if char == '"' and not escape_next:
+                        in_string = not in_string
+                        continue
+                    
+                    if not in_string:
+                        if char == '[' or char == '{':
+                            bracket_count += 1
+                        elif char == ']' or char == '}':
+                            bracket_count -= 1
+                            if bracket_count == 0:
+                                end = i + 1
+                                method_used = 'bracket counting'
+                                break
+                
+                if end > start:
+                    print(f"  Found end using bracket counting at position {end}")
                 else:
+                    print("  ✗ Bracket counting failed")
                     return []
-            else:
-                json_str = match.group(1)
-
+            
+            json_str = html_content[start:end]
             print(f"  Extracted JSON string ({len(json_str)} characters)")
+            print(f"  First 200 chars: {repr(json_str[:200])}")
+            print(f"  Last 100 chars: {repr(json_str[-100:])}")
             
             # Parse the JSON
             try:
                 articles = json.loads(json_str)
+                print(f"✓ Successfully parsed {len(articles)} articles")
             except json.JSONDecodeError as e:
                 print(f"  ✗ JSON decode error: {e}")
-                print(f"  Attempting to fix common issues...")
                 
-                # Try to fix common issues
-                # Remove any trailing commas before closing brackets
-                json_str = re.sub(r',(\s*[}\]])', r'\1', json_str)
+                # Save full JSON for debugging
+                with open('debug_json_full.txt', 'w', encoding='utf-8') as f:
+                    f.write(json_str)
+                print(f"  Saved full JSON to debug_json_full.txt ({len(json_str)} bytes)")
                 
-                try:
-                    articles = json.loads(json_str)
-                    print(f"  ✓ Fixed and parsed successfully")
-                except:
-                    print(f"  ✗ Still failed after attempted fixes")
-                    # Save problematic JSON for debugging
-                    with open('debug_json.txt', 'w', encoding='utf-8') as f:
-                        f.write(json_str[:2000])  # First 2000 chars
-                    print(f"  Saved first 2000 chars to debug_json.txt for inspection")
-                    return []
+                return []
             
-            print(f"✓ Successfully extracted {len(articles)} articles")
-
             if len(articles) > self.max_articles:
                 articles = articles[:self.max_articles]
                 print(f"  Limited to {self.max_articles} articles")
