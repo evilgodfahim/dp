@@ -42,105 +42,90 @@ class RSSFeedGenerator:
             
             print(f"  Found 'initialContents' at position {idx}")
             
-            # Look at the context around initialContents
-            context_start = max(0, idx - 50)
-            context_end = min(len(html_content), idx + 200)
-            context = html_content[context_start:context_end]
-            print(f"  Context: {repr(context)}")
+            # The JSON is escaped with backslashes, so we need to find the pattern
+            # "initialContents":[{...}]
+            # The actual JSON starts after the colon and opening bracket
             
-            # Find where the actual JSON data starts
-            # Look for common patterns: initialContents = [...] or initialContents: [...]
+            # Find the opening bracket after initialContents
             start = html_content.find('[', idx)
             if start == -1:
-                print("  ✗ No opening bracket found after initialContents")
+                print("  ✗ No opening bracket found")
                 return []
             
-            print(f"  Opening bracket at position {start} (offset +{start-idx} from initialContents)")
-            print(f"  First 100 chars after bracket: {repr(html_content[start:start+100])}")
+            print(f"  Opening bracket at position {start}")
             
-            # Check if this looks like valid JSON
-            test_snippet = html_content[start:start+50].strip()
-            if not test_snippet.startswith('['):
-                print(f"  ✗ Unexpected content after bracket: {repr(test_snippet)}")
+            # Now we need to find the matching closing bracket
+            # The string has escaped quotes, so we need to handle \\" properly
+            bracket_count = 0
+            in_string = False
+            i = start
+            escape_next = False
+            
+            while i < len(html_content):
+                char = html_content[i]
+                
+                # Handle escaped characters
+                if escape_next:
+                    escape_next = False
+                    i += 1
+                    continue
+                
+                if char == '\\':
+                    escape_next = True
+                    i += 1
+                    continue
+                
+                # Track if we're inside a string (checking for \")
+                if char == '"':
+                    in_string = not in_string
+                    i += 1
+                    continue
+                
+                # Only count brackets when not in a string
+                if not in_string:
+                    if char == '[' or char == '{':
+                        bracket_count += 1
+                    elif char == ']' or char == '}':
+                        bracket_count -= 1
+                        if bracket_count == 0:
+                            end = i + 1
+                            break
+                
+                i += 1
+            
+            if bracket_count != 0:
+                print(f"  ✗ Could not find matching closing bracket (count={bracket_count})")
                 return []
             
-            # Try to find the end of the JSON array by looking for the pattern
-            # We need to find either ];  or ]; or ]</script>
+            # Extract the JSON string (with escaped quotes)
+            json_str_escaped = html_content[start:end]
+            print(f"  Extracted escaped JSON ({len(json_str_escaped)} characters)")
             
-            # Method 1: Look for common termination patterns
-            patterns = [
-                (r'\];', 'semicolon'),
-                (r'\]\s*<', 'tag'),
-                (r'\]\s*var\s+', 'next var'),
-            ]
+            # Now unescape the JSON string
+            # Replace \" with " and \\ with \
+            json_str = json_str_escaped.replace('\\"', '"').replace('\\\\', '\\')
             
-            end = -1
-            method_used = None
-            
-            for pattern, name in patterns:
-                match = re.search(pattern, html_content[start:start+50000])
-                if match:
-                    end = start + match.end() - 1  # -1 to include the ]
-                    method_used = name
-                    print(f"  Found end using pattern '{name}' at position {end}")
-                    break
-            
-            if end == -1:
-                print("  ✗ Could not find JSON array end using patterns")
-                print("  Trying bracket counting method...")
-                
-                # Fallback: bracket counting
-                bracket_count = 0
-                in_string = False
-                escape_next = False
-                
-                for i in range(start, min(start + 50000, len(html_content))):
-                    char = html_content[i]
-                    
-                    if escape_next:
-                        escape_next = False
-                        continue
-                    
-                    if char == '\\':
-                        escape_next = True
-                        continue
-                    
-                    if char == '"' and not escape_next:
-                        in_string = not in_string
-                        continue
-                    
-                    if not in_string:
-                        if char == '[' or char == '{':
-                            bracket_count += 1
-                        elif char == ']' or char == '}':
-                            bracket_count -= 1
-                            if bracket_count == 0:
-                                end = i + 1
-                                method_used = 'bracket counting'
-                                break
-                
-                if end > start:
-                    print(f"  Found end using bracket counting at position {end}")
-                else:
-                    print("  ✗ Bracket counting failed")
-                    return []
-            
-            json_str = html_content[start:end]
-            print(f"  Extracted JSON string ({len(json_str)} characters)")
-            print(f"  First 200 chars: {repr(json_str[:200])}")
-            print(f"  Last 100 chars: {repr(json_str[-100:])}")
+            print(f"  Unescaped to {len(json_str)} characters")
+            print(f"  First 150 chars: {json_str[:150]}")
+            print(f"  Last 150 chars: {json_str[-150:]}")
             
             # Parse the JSON
             try:
                 articles = json.loads(json_str)
                 print(f"✓ Successfully parsed {len(articles)} articles")
+                
+                # Show a sample article
+                if articles and len(articles) > 0:
+                    sample = articles[0]
+                    print(f"  Sample article: {sample.get('Heading', 'N/A')[:50]}...")
+                    
             except json.JSONDecodeError as e:
                 print(f"  ✗ JSON decode error: {e}")
                 
-                # Save full JSON for debugging
-                with open('debug_json_full.txt', 'w', encoding='utf-8') as f:
-                    f.write(json_str)
-                print(f"  Saved full JSON to debug_json_full.txt ({len(json_str)} bytes)")
+                # Save for debugging
+                with open('debug_json_unescaped.txt', 'w', encoding='utf-8') as f:
+                    f.write(json_str[:5000])  # First 5000 chars
+                print(f"  Saved first 5000 chars to debug_json_unescaped.txt")
                 
                 return []
             
