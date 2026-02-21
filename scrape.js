@@ -1,40 +1,60 @@
-import fs from "fs";
+// extractor.js
+const fs = require("fs");
+const path = require("path");
 
 const HTML_FILE = "opinion.html";
 const FEED_FILE = "feed.xml";
 const MAX_ITEMS = 500;
 
 function extractJSON(html) {
-  const key = "\"initialContents\"";
-  const pos = html.indexOf(key);
-  if (pos === -1) return null;
+  if (!html) return null;
 
-  let i = pos;
-  while (i >= 0 && html[i] !== "{") i--;
-  let start = i;
-
-  let depth = 0;
-  let end = -1;
-  for (let j = start; j < html.length; j++) {
-    if (html[j] === "{") depth++;
-    if (html[j] === "}") depth--;
-    if (depth === 0) {
-      end = j + 1;
-      break;
-    }
+  // Try to extract a JSON object that contains "initialContents"
+  const re1 = /initialContents\s*[:=]\s*(\{[\s\S]*?\})/m;
+  let m = html.match(re1);
+  if (m) {
+    try {
+      const parsed = JSON.parse(m[1]);
+      if (parsed && (parsed.initialContents || Object.keys(parsed).length)) {
+        return parsed.initialContents || parsed;
+      }
+    } catch (e) {}
   }
-  if (end === -1) return null;
 
-  const jsonText = html.slice(start, end);
-  return JSON.parse(jsonText).initialContents;
+  // Fallback: try common window-initial-state patterns
+  const re2 = /window\.__INITIAL_STATE__\s*=\s*(\{[\s\S]*?\});/m;
+  m = html.match(re2);
+  if (m) {
+    try { return JSON.parse(m[1]); } catch (e) {}
+  }
+
+  // Fallback: look for a JSON script tag
+  const reScript = /<script[^>]*>\s*({\s*"initialContents"[\s\S]*?})\s*<\/script>/m;
+  m = html.match(reScript);
+  if (m) {
+    try {
+      const parsed = JSON.parse(m[1]);
+      return parsed.initialContents || parsed;
+    } catch (e) {}
+  }
+
+  return null;
 }
 
-function loadOldFeed() {
+function loadOldFeedGuids() {
   if (!fs.existsSync(FEED_FILE)) return [];
-
   const xml = fs.readFileSync(FEED_FILE, "utf8");
-  const match = [...xml.matchAll(/<guid>(.*?)<\/guid>/g)];
-  return match.map(m => m[1]);
+  const match = [...xml.matchAll(/<guid[^>]*>([\s\S]*?)<\/guid>/g)];
+  return match.map(m => m[1].trim());
+}
+
+function xmlEscape(s) {
+  if (!s && s !== 0) return "";
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }
 
 function buildRSS(items) {
@@ -45,24 +65,19 @@ function buildRSS(items) {
 <link>https://www.dhakapost.com/opinion</link>
 <description>Generated</description>
 `;
-
   const tail = `
 </channel>
 </rss>`;
 
   const body = items.map(i => `
 <item>
-<title><![CDATA[${i.title}]]></title>
-<link>${i.url}</link>
-<guid>${i.url}</guid>
+<title><![CDATA[${i.title || ""}]]></title>
+<link>${xmlEscape(i.url || "")}</link>
+<guid>${xmlEscape(i.url || "")}</guid>
 <description><![CDATA[${i.brief || ""}]]></description>
 </item>`).join("");
 
   return head + body + tail;
-}
-
-function xmlEscape(s) {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;");
 }
 
 (function main() {
@@ -72,24 +87,48 @@ function xmlEscape(s) {
   }
 
   const html = fs.readFileSync(HTML_FILE, "utf8");
-  const data = extractJSON(html) || [];
+  const raw = extractJSON(html) || [];
 
-  const newItems = data.map(i => ({
-    url: i.URL,
-    title: i.Heading,
-    brief: i.Brief
-  }));
+  // raw might be an object; try to normalize to an array of items
+  let dataItems = [];
+  if (Array.isArray(raw)) {
+    dataItems = raw;
+  } else if (raw && typeof raw === "object") {
+    // Common keys to look for
+    if (Array.isArray(raw.items)) dataItems = raw.items;
+    else if (Array.isArray(raw.contents)) dataItems = raw.contents;
+    else {
+      // attempt to find the first array-valued property
+      const arrProp = Object.keys(raw).find(k => Array.isArray(raw[k]));
+      if (arrProp) dataItems = raw[arrProp];
+    }
+  }
 
-  // old GUIDs
-  const oldUrls = new Set(loadOldFeed());
+  // Normalize fields and filter invalid entries
+  const newItems = dataItems
+    .map(i => {
+      if (!i || typeof i !== "object") return null;
+      const url = i.URL || i.url || i.link || i.href;
+      const title = i.Heading || i.title || i.heading || i.name;
+      const brief = i.Brief || i.brief || i.summary || i.excerpt || "";
+      if (!url) return null;
+      return { url: String(url).trim(), title: String(title || "").trim(), brief: String(brief || "").trim() };
+    })
+    .filter(Boolean);
 
+  // old GUIDs (urls)
+  const oldGuids = loadOldFeedGuids();
+  const oldSet = new Set(oldGuids);
+
+  // merge: keep new items first, then keep previous GUID placeholders (to preserve order/history)
   const merged = [
-    ...newItems.filter(i => !oldUrls.has(i.url)),
-    ...Array.from(oldUrls).map(u => ({ url: u, title: "", brief: "" }))
+    ...newItems.filter(i => !oldSet.has(i.url)),
+    ...oldGuids.filter(u => !newItems.some(n => n.url === u)).map(u => ({ url: u, title: "", brief: "" }))
   ];
 
   const finalItems = merged.slice(0, MAX_ITEMS);
   const xml = buildRSS(finalItems);
 
-  fs.writeFileSync(FEED_FILE, xml);
+  fs.writeFileSync(FEED_FILE, xml, "utf8");
+  console.log(`Wrote ${FEED_FILE} (${finalItems.length} items)`);
 })();
