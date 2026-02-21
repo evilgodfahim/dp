@@ -1,3 +1,4 @@
+# .github/workflows/fetch.yml
 name: Fetch DhakaPost (Rendered, robust)
 
 on:
@@ -25,7 +26,6 @@ jobs:
           if [ -f package-lock.json ]; then
             npm ci --no-audit --no-fund --prefer-offline
           else
-            # keep your previous approach but pin version and retry
             for i in 1 2 3; do
               npm install puppeteer@24 --no-audit --no-fund --progress=false && break
               echo "install attempt $i failed, retrying..."
@@ -38,7 +38,77 @@ jobs:
       - name: Render and save HTML
         run: |
           node <<'NODE'
-          /* your existing puppeteer rendering script unchanged */
+          const puppeteer = require('puppeteer');
+          const fs = require('fs');
+
+          async function autoScroll(page){
+            await page.evaluate(async () => {
+              await new Promise((resolve) => {
+                var total = 0;
+                var distance = 500;
+                var timer = setInterval(() => {
+                  window.scrollBy(0, distance);
+                  total += distance;
+                  if(total > document.body.scrollHeight - window.innerHeight){
+                    clearInterval(timer);
+                    resolve();
+                  }
+                }, 300);
+              });
+            });
+          }
+
+          (async () => {
+            const url = "https://www.dhakapost.com/opinion";
+            const maxAttempts = 3;
+            let lastHtml = '';
+            for(let attempt=1; attempt<=maxAttempts; attempt++){
+              let browser;
+              try{
+                browser = await puppeteer.launch({
+                  headless: "new",
+                  args: ["--no-sandbox","--disable-setuid-sandbox","--disable-dev-shm-usage"]
+                });
+                const page = await browser.newPage();
+                page.setDefaultNavigationTimeout(90000);
+                page.setDefaultTimeout(90000);
+                await page.setViewport({width:1280, height:900});
+
+                await page.goto(url, { waitUntil: "networkidle2", timeout: 90000 });
+
+                await autoScroll(page);
+
+                try{
+                  await Promise.race([
+                    page.waitForSelector('article, .post, .td_block_inner, .single-post', { timeout: 90000 }),
+                    page.waitForFunction(() => document.body && document.body.innerText.length > 1200, { timeout: 90000 })
+                  ]);
+                } catch(e){}
+
+                await page.waitForTimeout(2000);
+
+                const html = await page.content();
+                await browser.close();
+
+                if(html && html.length > 2000){
+                  fs.writeFileSync('opinion.html', html);
+                  lastHtml = html;
+                  break;
+                } else {
+                  fs.writeFileSync(`opinion_try_${attempt}.html`, html);
+                  lastHtml = html;
+                }
+              } catch(err){
+                console.error('attempt', attempt, 'error:', err && err.message ? err.message : err);
+                if(browser) try{ await browser.close(); }catch(e){}
+              }
+            }
+
+            if(!fs.existsSync('opinion.html') && lastHtml){
+              fs.writeFileSync('opinion.html', lastHtml);
+            }
+            console.log('Saved opinion.html');
+          })();
           NODE
 
       - name: Commit and push
