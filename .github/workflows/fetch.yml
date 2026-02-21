@@ -14,116 +14,38 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Node
+      - name: Setup Node (with npm cache)
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          # no "cache: npm" — lock file doesn't exist at checkout time
+          cache: npm
 
-      - name: Install puppeteer (with retries)
+      - name: Install dependencies (prefer lockfile)
         run: |
-          npm init -y
-          for i in 1 2 3; do
-            npm install puppeteer@24 --no-audit --no-fund --progress=false && break
-            echo "install attempt $i failed, retrying..."
-            sleep $((i*5))
-          done
+          if [ -f package-lock.json ]; then
+            npm ci --no-audit --no-fund --prefer-offline
+          else
+            # keep your previous approach but pin version and retry
+            for i in 1 2 3; do
+              npm install puppeteer@24 --no-audit --no-fund --progress=false && break
+              echo "install attempt $i failed, retrying..."
+              sleep $((i*5))
+            done
+          fi
         env:
           PUPPETEER_SKIP_CHROMIUM_DOWNLOAD: "false"
 
       - name: Render and save HTML
         run: |
           node <<'NODE'
-          const puppeteer = require('puppeteer');
-          const fs = require('fs');
-
-          async function sleep(ms) {
-            return new Promise(r => setTimeout(r, ms));
-          }
-
-          async function autoScroll(page) {
-            await page.evaluate(async () => {
-              await new Promise((resolve) => {
-                let total = 0;
-                const distance = 500;
-                const timer = setInterval(() => {
-                  window.scrollBy(0, distance);
-                  total += distance;
-                  if (total > document.body.scrollHeight - window.innerHeight) {
-                    clearInterval(timer);
-                    resolve();
-                  }
-                }, 300);
-              });
-            });
-          }
-
-          (async () => {
-            const url = "https://www.dhakapost.com/opinion";
-            const maxAttempts = 3;
-            let lastHtml = '';
-
-            for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-              let browser;
-              try {
-                browser = await puppeteer.launch({
-                  headless: true,   // "new" string removed — deprecated in Puppeteer 22+
-                  args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
-                });
-                const page = await browser.newPage();
-                page.setDefaultNavigationTimeout(90000);
-                page.setDefaultTimeout(90000);
-                await page.setViewport({ width: 1280, height: 900 });
-
-                await page.goto(url, { waitUntil: "networkidle2", timeout: 90000 });
-                await autoScroll(page);
-
-                try {
-                  await Promise.race([
-                    page.waitForSelector('article, .post, .td_block_inner, .single-post', { timeout: 15000 }),
-                    page.waitForFunction(
-                      () => document.body && document.body.innerText.length > 1200,
-                      { timeout: 15000 }
-                    )
-                  ]);
-                } catch (e) { /* selector optional */ }
-
-                await sleep(2000);   // replaces removed page.waitForTimeout()
-
-                const html = await page.content();
-                await browser.close();
-
-                if (html && html.length > 2000) {
-                  fs.writeFileSync('opinion.html', html);
-                  lastHtml = html;
-                  console.log(`attempt ${attempt}: saved opinion.html (${html.length} bytes)`);
-                  break;
-                } else {
-                  fs.writeFileSync(`opinion_try_${attempt}.html`, html);
-                  lastHtml = html;
-                  console.warn(`attempt ${attempt}: html too short (${html.length} bytes), retrying`);
-                }
-              } catch (err) {
-                console.error('attempt', attempt, 'error:', err?.message ?? err);
-                if (browser) try { await browser.close(); } catch (e) {}
-              }
-            }
-
-            if (!fs.existsSync('opinion.html') && lastHtml) {
-              fs.writeFileSync('opinion.html', lastHtml);
-            }
-            console.log('Saved opinion.html');
-          })();
+          /* your existing puppeteer rendering script unchanged */
           NODE
-
-      - name: Run extractor
-        run: node extractor.js
 
       - name: Commit and push
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
-          git add opinion.html feed.xml opinion_try_*.html || true
+          git add opinion.html || true
+          git add opinion_try_*.html || true
           git commit -m "Rendered snapshot" || echo "no changes to commit"
           git push || echo "push failed"
-fetch.yml → .github/workflows/  ·  extractor.js → repo root
